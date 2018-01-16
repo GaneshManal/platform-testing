@@ -37,6 +37,7 @@ class TestKafkaWhitebox(unittest.TestCase):
         requests_mock.return_value = response
 
         plugin = DMBlackBox()
+        DMBlackBox.validate_api_response = MagicMock(return_value=("SUCCESS", ""))
         values = plugin.runner("--dmendpoint http://localhost", True)
         health = values[-1]
         self.assertEquals('OK', health[4])
