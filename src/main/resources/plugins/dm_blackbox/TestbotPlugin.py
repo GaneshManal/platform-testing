@@ -17,10 +17,14 @@ Purpose:      Blackbox test for the Deployment manager
 
 """
 
+import json
+import sys
+import re
 import time
 import argparse
 import eventlet
 import requests
+from requests.exceptions import RequestException
 
 from pnda_plugin import PndaPlugin
 from pnda_plugin import Event
@@ -47,6 +51,38 @@ class DMBlackBox(PndaPlugin):
 
         return parser.parse_args(args)
 
+    @staticmethod
+    def parse_error_msg_from_html_response(html_str):
+        title_tag = re.search('<title>(.+?)<.*/title>', html_str)
+        if title_tag:
+            cause_msg = re.sub('<[A-Za-z\/][^>]*>', '', title_tag.group())
+            return cause_msg
+        return html_str
+
+    @staticmethod
+    def validate_api_response(response, path):
+        expected_codes = [200]
+
+        if response.status_code in expected_codes:
+            return 'SUCCESS', None
+        elif response.status_code in [500, 503, 404, 400, 409]:
+            if response.status_code == 500:
+                try:
+                    json_obj = json.loads(response.text)
+                    temp_msg = json_obj.get('information', 'Not Available')
+                except ValueError:
+                    temp_msg = response.text
+                cause_msg = DMBlackBox.parse_error_msg_from_html_response(temp_msg)
+            elif response.status_code == 404:
+                if 'Package Repository Manager' not in response.text:
+                    cause_msg = 'URL Not found: ' + path
+                else:
+                    cause_msg = response.text
+            else:
+                cause_msg = DMBlackBox.parse_error_msg_from_html_response(response.text)
+            return 'FAIL', cause_msg
+        else:
+            return 'FAIL', 'Unexpected Response Code - %s - %s' % (response.status_code, response.text)
 
     def runner(self, args, display=True):
         '''
@@ -57,56 +93,79 @@ class DMBlackBox(PndaPlugin):
         else ""
 
         options = self.read_args(plugin_args)
-
+        cause = []
         values = []
 
-        try:
-            start = TIMESTAMP_MILLIS()
-            with eventlet.Timeout(100):
-                req = requests.get("%s/repository/packages" % (options.dmendpoint), timeout=20)
-            end = TIMESTAMP_MILLIS()
-            packages_available_ok = True
-            packages_available_count = len(req.json())
-            packages_available_ms = end-start
-            values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager", \
-                "deployment-manager.packages_available_time_ms", \
-                [], packages_available_ms))
-            values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager", \
-                "deployment-manager.packages_available_count", \
-                [], packages_available_count))
-        except Exception:
-            packages_available_ok = False
-        values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager", \
-            "deployment-manager.packages_available_succeeded", \
-            [], packages_available_ok))
+        packages_available_ok, packages_deployed_ok = False, False
+        packages_available_count, packages_deployed_count = -1, -1
+        packages_available_ms, packages_deployed_ms = -1, -1
 
+        # noinspection PyBroadException
         try:
+            path = 'repository/packages'
             start = TIMESTAMP_MILLIS()
             with eventlet.Timeout(100):
-                req = requests.get("%s/packages" \
-                    % (options.dmendpoint), timeout=20)
+                req = requests.get("%s/%s" % (options.dmendpoint, path), timeout=20)
             end = TIMESTAMP_MILLIS()
-            packages_deployed_ok = True
-            packages_deployed_count = len(req.json())
-            packages_deployed_ms = end-start
-            values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager", \
-                "deployment-manager.packages_deployed_time_ms", \
-                [], packages_deployed_ms))
-            values.append(Event(TIMESTAMP_MILLIS(), 'deployment-manager', \
-                "deployment-manager.packages_deployed_count", \
-                [], packages_deployed_count))
+
+            packages_available_ms = end - start
+            status, msg = DMBlackBox.validate_api_response(req, path)
+
+            if status == 'SUCCESS':
+                packages_available_ok = True
+                packages_available_count = len(req.json())
+            else:
+                if 'Package Repository Manager' not in msg:
+                    msg = 'Deployment manager - ' + msg
+                cause.append(msg)
+
+            path = 'packages'
+            start = TIMESTAMP_MILLIS()
+            with eventlet.Timeout(100):
+                req = requests.get("%s/%s" % (options.dmendpoint, path), timeout=20)
+            end = TIMESTAMP_MILLIS()
+
+            packages_deployed_ms = end - start
+            status, msg = DMBlackBox.validate_api_response(req, path)
+
+            if status == 'SUCCESS':
+                packages_deployed_ok = True
+                packages_deployed_count = len(req.json())
+            else:
+                if 'Package Repository Manager' not in msg:
+                    msg = 'Deployment manager - ' + msg
+                cause.append(msg)
+
+        except RequestException:
+            cause.append('Unable to connect to the Deployment Manager')
+
         except Exception:
-            packages_deployed_ok = False
-        values.append(Event(TIMESTAMP_MILLIS(), 'deployment-manager', \
-            "deployment-manager.packages_deployed_succeeded", \
-            [], packages_deployed_ok))
-        cause = ""
+            cause.append('Exception - ' + str(sys.exc_info()[0]))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager",
+                            "deployment-manager.packages_available_time_ms", [], packages_available_ms))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager",
+                            "deployment-manager.packages_available_succeeded", [], packages_available_ok))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager",
+                            "deployment-manager.packages_available_count", [], packages_available_count))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "deployment-manager",
+                            "deployment-manager.packages_deployed_time_ms", [], packages_deployed_ms))
+
+        values.append(Event(TIMESTAMP_MILLIS(), 'deployment-manager',
+                            "deployment-manager.packages_deployed_succeeded", [], packages_deployed_ok))
+
+        values.append(Event(TIMESTAMP_MILLIS(), 'deployment-manager',
+                            "deployment-manager.packages_deployed_count", [], packages_deployed_count))
+
         health = "OK"
         if not packages_available_ok or not packages_deployed_ok:
             health = "ERROR"
-            cause = "Deployment manager package APIs are not working"
+
         values.append(Event(TIMESTAMP_MILLIS(), 'deployment-manager',
-                            'deployment-manager.health', [cause], health))
+                            'deployment-manager.health', cause, health))
         if display:
             self._do_display(values)
         return values
