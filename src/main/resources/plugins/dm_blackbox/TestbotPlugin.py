@@ -74,15 +74,12 @@ class DMBlackBox(PndaPlugin):
                     temp_msg = response.text
                 cause_msg = DMBlackBox.parse_error_msg_from_html_response(temp_msg)
             elif response.status_code == 404:
-                if 'Package Repository Manager' not in response.text:
-                    cause_msg = 'URL Not found: ' + path
-                else:
-                    cause_msg = response.text
+                cause_msg = '404: Not Found - ' + path
             else:
                 cause_msg = DMBlackBox.parse_error_msg_from_html_response(response.text)
             return 'FAIL', cause_msg
         else:
-            return 'FAIL', 'Unexpected Response Code - %s - %s' % (response.status_code, response.text)
+            return 'FAIL', 'Unexpected Response Code - %s: %s' % (response.status_code, response.text)
 
     def runner(self, args, display=True):
         '''
@@ -102,10 +99,10 @@ class DMBlackBox(PndaPlugin):
 
         # noinspection PyBroadException
         try:
-            path = 'repository/packages'
+            path = '/repository/packages'
             start = TIMESTAMP_MILLIS()
             with eventlet.Timeout(100):
-                req = requests.get("%s/%s" % (options.dmendpoint, path), timeout=20)
+                req = requests.get("%s%s" % (options.dmendpoint, path), timeout=20)
             end = TIMESTAMP_MILLIS()
 
             packages_available_ms = end - start
@@ -119,10 +116,10 @@ class DMBlackBox(PndaPlugin):
                     msg = 'Deployment manager - ' + msg
                 cause.append(msg)
 
-            path = 'packages'
+            path = '/packages'
             start = TIMESTAMP_MILLIS()
             with eventlet.Timeout(100):
-                req = requests.get("%s/%s" % (options.dmendpoint, path), timeout=20)
+                req = requests.get("%s%s" % (options.dmendpoint, path), timeout=20)
             end = TIMESTAMP_MILLIS()
 
             packages_deployed_ms = end - start
