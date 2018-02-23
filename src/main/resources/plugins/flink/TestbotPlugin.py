@@ -98,10 +98,10 @@ class Flink(PndaPlugin):
             cause.append('Platform Testing Client Error- ' + str(e))
 
         values.append(Event(TIMESTAMP_MILLIS(), "flink",
-                            "flink.history_server_available_ms", [], packages_available_ms))
+                            "flink.history_server_available_ms", [], history_server_available_ms))
 
         values.append(Event(TIMESTAMP_MILLIS(), "flink",
-                            "flink.history_server_available_ok", [], packages_available_ok))
+                            "flink.history_server_available_ok", [], history_server_available_ok))
 
         health = "OK"
         if not history_server_available_ok:

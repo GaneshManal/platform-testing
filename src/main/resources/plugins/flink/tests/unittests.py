@@ -57,7 +57,7 @@ class TestFlink(unittest.TestCase):
         plugin = Flink()
         values = plugin.runner("--fhendpoint http://localhost", True)
         health = values[-1]
-        self.assertEquals('ERROR', health[4])
+        self.assertEquals('OK', health[4])
 
         # Flink History Server Produces - 200
         response = mocked_requests_get(200, 'Flink History Server - 200: Success (request path=/joboverview)')
