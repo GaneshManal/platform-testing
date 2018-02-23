@@ -21,18 +21,19 @@ import time
 import argparse
 import requests
 import eventlet
+import json
 from requests.exceptions import RequestException
 
 from pnda_plugin import PndaPlugin
 from pnda_plugin import Event
 
 TIMESTAMP_MILLIS = lambda: int(round(time.time() * 1000))
-TESTBOTPLUGIN = lambda: FLINK()
+TESTBOTPLUGIN = lambda: Flink()
 
 
 class Flink(PndaPlugin):
     '''
-    Blackbox test plugin for the Deployment Manager
+    Flink test plugin for the Flink History Server
     '''
 
     def __init__(self):
@@ -43,22 +44,23 @@ class Flink(PndaPlugin):
         This class argument parser.
         This shall come from main runner in the extra arg
         '''
-        parser = argparse.ArgumentParser(prog=self.__class__.__name__, \
-         usage='%(prog)s [options]', description='Key metrics from CDH cluster')
-        parser.add_argument('--fhendpoint', default='http://localhost:8082', \
-         help='Flink History Server endpoint e.g. http://localhost:8082')
+        parser = argparse.ArgumentParser(prog=self.__class__.__name__,
+                                         usage='%(prog)s [options]', description='Key metrics from CDH cluster')
 
+        parser.add_argument('--fhendpoint', default='http://localhost:8082',
+                            help='Flink History Server endpoint e.g. http://localhost:8082')
         return parser.parse_args(args)
 
-
     @staticmethod
-    def validate_api_response(response, path):
-        expected_codes = [200, 404]
+    def validate_api_response(response, path, other_exp_codes=[]):
+        expected_codes = [200]
+        expected_codes.extend(other_exp_codes)
 
         if response.status_code in expected_codes:
             return 'SUCCESS', None
         else:
-            return 'FAIL', path
+            cause_msg = 'Flink History Server - {} (request path = {})'.format(response.text.strip(), path)
+            return 'FAIL', cause_msg
 
     def runner(self, args, display=True):
         """
@@ -72,12 +74,13 @@ class Flink(PndaPlugin):
         cause = []
         values = []
 
-        history_server_available_ok = False
-        history_server_available_ms = -1
+        history_server_available_ok, history_server_completed_jobs_ok = False, False
+        history_server_available_ms, history_server_completed_jobs_ms = -1, -1
+        history_server_version, completed_job_count = '', -1
 
         # noinspection PyBroadException
         try:
-            path = '/joboverview'
+            path = '/config'
             start = TIMESTAMP_MILLIS()
             with eventlet.Timeout(100):
                 req = requests.get("%s%s" % (options.fhendpoint, path), timeout=20)
@@ -87,6 +90,7 @@ class Flink(PndaPlugin):
             status, msg = Flink.validate_api_response(req, path)
 
             if status == 'SUCCESS':
+                history_server_version = json.loads(req.text).get("flink-version", '')
                 history_server_available_ok = True
             else:
                 cause.append(msg)
@@ -97,18 +101,57 @@ class Flink(PndaPlugin):
         except Exception as e:
             cause.append('Platform Testing Client Error- ' + str(e))
 
-        values.append(Event(TIMESTAMP_MILLIS(), "flink",
-                            "flink.history_server_available_ms", [], history_server_available_ms))
+        # noinspection PyBroadException
+        try:
+            path = '/joboverview'
+            start = TIMESTAMP_MILLIS()
+            with eventlet.Timeout(100):
+                req = requests.get("%s%s" % (options.fhendpoint, path), timeout=20)
+            end = TIMESTAMP_MILLIS()
+
+            history_server_completed_jobs_ms = end - start
+            status, msg = Flink.validate_api_response(req, path, [404])
+
+            if status == 'SUCCESS':
+                if req.status_code == 200:
+                    completed_job_count = len(json.loads(req.text).get('finished'))
+                elif req.status_code == 404:
+                    completed_job_count = 0
+                history_server_completed_jobs_ok = True
+            else:
+                cause.append(msg)
+
+        except RequestException:
+            cause.append('Unable to connect to the Flink History Server (request path = {})'.format(path))
+
+        except Exception as e:
+            cause.append('Platform Testing Client Error- ' + str(e))
 
         values.append(Event(TIMESTAMP_MILLIS(), "flink",
                             "flink.history_server_available_ok", [], history_server_available_ok))
 
+        values.append(Event(TIMESTAMP_MILLIS(), "flink",
+                            "flink.history_server_version", [], history_server_version))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "flink",
+                            "flink.history_server_available_ms", [], history_server_available_ms))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "flink",
+                            "flink.history_server_completed_jobs_ok", [], history_server_completed_jobs_ok))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "flink",
+                            "flink.history_server_completed_jobs_count", [], completed_job_count))
+
+        values.append(Event(TIMESTAMP_MILLIS(), "flink",
+                            "flink.history_server_completed_jobs_ms", [], history_server_completed_jobs_ms))
+
         health = "OK"
-        if not history_server_available_ok:
+        if not history_server_available_ok or not history_server_completed_jobs_ok:
             health = "ERROR"
 
         values.append(Event(TIMESTAMP_MILLIS(), 'flink',
                             'flink.health', cause, health))
+
         if display:
             self._do_display(values)
         return values
